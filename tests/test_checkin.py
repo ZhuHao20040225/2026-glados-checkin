@@ -55,5 +55,33 @@ class CookieTests(unittest.TestCase):
             self.assertEqual(checkin.get_cookies(), [])
 
 
+class AutoExchangeTests(unittest.TestCase):
+    def test_plan500_only_triggers_at_threshold(self):
+        self.assertFalse(checkin.should_auto_exchange(499, 'plan500'))
+        self.assertTrue(checkin.should_auto_exchange(500, 'plan500'))
+        self.assertTrue(checkin.should_auto_exchange('501.0', 'plan500'))
+
+    def test_unknown_plan_and_invalid_points_do_not_trigger(self):
+        self.assertFalse(checkin.should_auto_exchange(500, 'plan100'))
+        self.assertFalse(checkin.should_auto_exchange('?', 'plan500'))
+
+    def test_exchange_success_requires_code_zero(self):
+        self.assertTrue(checkin.is_successful_exchange_result({'code': 0}))
+        self.assertFalse(checkin.is_successful_exchange_result({'code': 1}))
+        self.assertFalse(checkin.is_successful_exchange_result(None))
+
+    def test_exchange_uses_current_glados_endpoint(self):
+        client = checkin.GLaDOS('test-cookie')
+        client.req = mock.Mock(return_value={'code': 0})
+
+        result = client.exchange('plan500')
+
+        self.assertEqual(result, {'code': 0})
+        client.req.assert_called_once_with(
+            'POST', '/api/user/exchange', {'planType': 'plan500'}
+        )
+
+
 if __name__ == '__main__':
     unittest.main()
+
