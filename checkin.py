@@ -45,6 +45,10 @@ NORMAL_CHECKIN_MESSAGES = (
     "today's observation logged",
 )
 
+AUTO_EXCHANGE_PLANS = {
+    "plan500": {"points": 500, "days": 100},
+}
+
 # ================= 工具函数 =================
 
 def log(msg):
@@ -116,6 +120,23 @@ def checkin_with_retry(client, attempts=3, delay_seconds=60):
             time.sleep(max(0, delay_seconds))
 
     return last_result, False
+
+
+def should_auto_exchange(points, plan_type):
+    """Return whether a supported plan has reached its exchange threshold."""
+    plan = AUTO_EXCHANGE_PLANS.get(plan_type)
+    if not plan:
+        return False
+
+    try:
+        return int(float(points)) >= plan["points"]
+    except (TypeError, ValueError):
+        return False
+
+
+def is_successful_exchange_result(result):
+    """GLaDOS returns code=0 after a points exchange succeeds."""
+    return isinstance(result, dict) and result.get("code") == 0
 
 # ================= 核心逻辑 =================
 
@@ -199,6 +220,10 @@ class GLaDOS:
         """执行签到"""
         return self.req('POST', '/api/user/checkin', {'token': 'glados.cloud'})
 
+    def exchange(self, plan_type):
+        """兑换积分套餐。plan500 对应 500 积分兑换 100 天。"""
+        return self.req('POST', '/api/user/exchange', {'planType': plan_type})
+
 # ================= 主程序 =================
 
 def pushplus(token, title, content):
@@ -276,6 +301,8 @@ def main():
     
     results = []
     success_cnt = 0
+    exchange_failed = False
+    auto_exchange_plan = os.environ.get("AUTO_EXCHANGE_PLAN", "").strip()
     
     for i, cookie in enumerate(cookies, 1):
         g = GLaDOS(cookie)
@@ -288,9 +315,47 @@ def main():
         
         # 2. Get Info (Refresh data)
         g.get_status()
-        g.get_points()
+        points_loaded = g.get_points()
+
+        # 3. Auto exchange. Do not retry an exchange request automatically: if
+        # the response is lost after the server succeeds, a retry could make a
+        # second purchase when enough points remain.
+        exchange_message = "未启用"
+        plan = AUTO_EXCHANGE_PLANS.get(auto_exchange_plan)
+        if auto_exchange_plan:
+            if not plan:
+                exchange_failed = True
+                exchange_message = f"不支持的兑换套餐: {auto_exchange_plan}"
+                log(f"❌ 账号 {i} | {exchange_message}")
+            elif not points_loaded:
+                exchange_failed = True
+                exchange_message = "积分读取失败，未执行自动兑换"
+                log(f"❌ 账号 {i} | {exchange_message}")
+            elif should_auto_exchange(g.points, auto_exchange_plan):
+                exchange_result = g.exchange(auto_exchange_plan)
+                if is_successful_exchange_result(exchange_result):
+                    exchange_message = (
+                        f"成功：{plan['points']} 积分兑换 {plan['days']} 天"
+                    )
+                    log(f"✅ 账号 {i} | 自动兑换成功: {exchange_message}")
+                    # Refresh both membership days and the remaining balance.
+                    g.get_status()
+                    g.get_points()
+                else:
+                    exchange_failed = True
+                    detail = (
+                        exchange_result.get('message', '未知错误')
+                        if isinstance(exchange_result, dict)
+                        else '网络错误'
+                    )
+                    exchange_message = f"失败：{detail}"
+                    log(f"❌ 账号 {i} | 自动兑换失败: {detail}")
+            else:
+                exchange_message = (
+                    f"未达到 {plan['points']} 积分，暂不兑换"
+                )
         
-        # 3. Log
+        # 4. Log
         status_icon = "✅" if is_success else "❌"
         # Actions logs are public in a public repository. Keep account details
         # inside the private notification instead of exposing the email here.
@@ -299,13 +364,14 @@ def main():
         if is_success:
             success_cnt += 1
         
-        # 4. Result Formatting
+        # 5. Result Formatting
         results.append(f"""
 <div style="border:2px solid #333; padding:15px; margin-bottom:15px; border-radius:10px; background:#fff;">
     <h3 style="margin:0 0 15px 0; color:#333; border-bottom:2px solid #333; padding-bottom:8px;">👤 {html.escape(str(g.email))}</h3>
     <p style="margin:8px 0; color:#000; font-size:16px;"><b>当前积分:</b> <span style="color:#e74c3c; font-size:22px; font-weight:bold;">{g.points}</span> <span style="color:#27ae60; font-weight:bold;">({g.points_change})</span></p>
     <p style="margin:8px 0; color:#000; font-size:16px;"><b>剩余天数:</b> <span style="font-weight:bold;">{g.left_days} 天</span></p>
     <p style="margin:8px 0; color:#000; font-size:16px;"><b>签到结果:</b> {html.escape(str(msg))}</p>
+    <p style="margin:8px 0; color:#000; font-size:16px;"><b>自动兑换:</b> {html.escape(exchange_message)}</p>
     <div style="margin-top:15px; padding:12px; background:#f0f0f0; border-radius:8px; border:1px solid #ccc;">
         <p style="margin:0 0 8px 0; color:#333; font-weight:bold; font-size:15px;">🎁 兑换选项:</p>
         <p style="margin:0; color:#000; font-size:14px; line-height:1.8;">
@@ -317,7 +383,7 @@ def main():
     # Push
     push_level = os.environ.get("PUSH_LEVEL", "fail_only").lower()
     
-    if push_level == "fail_only" and success_cnt == len(cookies):
+    if push_level == "fail_only" and success_cnt == len(cookies) and not exchange_failed:
         log("⏭️ 根据 PUSH_LEVEL=fail_only 设置，所有账号签到成功，跳过推送")
         return 0
 
@@ -335,7 +401,8 @@ def main():
         if tg_token and tg_chat_id:
             telegram_push(tg_token, tg_chat_id, title, content)
 
-    return 0 if success_cnt == len(cookies) else 1
+    return 0 if success_cnt == len(cookies) and not exchange_failed else 1
 
 if __name__ == '__main__':
     sys.exit(main())
+
