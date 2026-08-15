@@ -52,5 +52,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PUSH_LEVEL: ${{ vars.PUSH_LEVEL || 'fail_only' }}
+          # 500 积分时自动兑换 100 天；删除此变量即可关闭自动兑换。
+          AUTO_EXCHANGE_PLAN: 'plan500'
           CHECKIN_MAX_ATTEMPTS: '3'
           CHECKIN_RETRY_DELAY_SECONDS: '60'
+
