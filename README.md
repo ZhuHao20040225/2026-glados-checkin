@@ -1,3 +1,34 @@
+# GLaDOS Daily Checkin（当前工作流）
+
+本仓库已于 2026-10-11 将旧签到工作流替换为精简版本。当前操作以本节为准，下方旧版说明仅供历史参考。
+
+## 填写 Cookie
+
+1. 打开 Settings → Secrets and variables → Actions，编辑现有的 `GLADOS_COOKIE`。
+2. 在你自己的浏览器中登录 GLaDOS，打开开发者工具 Network，刷新页面。
+3. 找到返回正常账户信息的 `/api/user/status` 请求，复制 Request Headers 中完整的 Cookie 值，粘贴为一行，然后 Update secret。
+4. 保留实际请求中的所有 Cookie 字段，不要只选取 koa 字段，也不要粘贴 JSON、引号、浏览器截图或整个请求头列表。
+
+## 手动运行
+
+打开 Actions → **GLaDOS Daily Checkin** → **Run workflow**。
+
+- 域名必须与获取 Cookie 的已登录页面相同，默认 `glados.one`。
+- 实际签到时不要勾选“仅验证配置与 Python，不执行签到”。勾选后只验证工作流启动与 Python，绿色结果不代表签到成功。
+- 自动签到每天北京时间 09:30 触发，GitHub 可能延迟。
+- 如果实际使用其它域名，在 Actions 的 Variables 中设置 `GLADOS_HOST`；手动选项只影响当次运行。允许 glados.one、glados.cloud、glados.rocks、glados.network。
+
+## 结果与排错
+
+新工作流先检查登录，再签到；仅依赖 Python 标准库，不查询积分、不自动兑换、不发送第三方推送。保留现有保活工作流，供定时任务继续运行。
+
+查看运行 Summary 或 checkin → **Check login and sign in** 日志。日志记录阶段、域名、HTTP 状态、业务 code 和 message，并对 Cookie 值和邮箱脱敏。登录失败会直接停止；网络异常、429 和服务端 5xx 才重试。不会带着 Cookie 自动切换域名或跟随跳转。
+
+2026-10-11 已通过一次“仅校验”运行；真实签到需要填写有效 Cookie 后另行验证，不把配置校验当作功能已恢复。
+
+<details>
+<summary>旧版项目说明（不适用于当前 Actions 配置）</summary>
+
 # 🎁 5 分钟配置 GLaDOS 自动签到
 
 <div align="center">
@@ -767,3 +798,6 @@ MIT
 
 </div>
 
+
+
+</details>
