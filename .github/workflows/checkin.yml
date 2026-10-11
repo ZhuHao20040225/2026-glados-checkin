@@ -1,59 +1,130 @@
-name: GLaDOS 2026 Checkin
+name: GLaDOS Daily Checkin
 
 on:
   schedule:
-    # 北京时间 09:30（UTC 01:30）。一天一次即可，脚本会在失败时自动重试。
-    - cron: '30 1 * * *'
+    - cron: '30 1 * * *' # 北京时间 09:30，GitHub 可能延迟
   workflow_dispatch:
     inputs:
-      dispatch_source:
-        description: 手动运行请选择 manual；外部定时器填写 external
-        required: true
+      host:
+        description: Cookie 所属域名（必须与已登录页面一致）
         type: choice
+        default: glados.one
         options:
-          - manual
-          - external
-
-concurrency:
-  group: glados-checkin
-  cancel-in-progress: false
+          - glados.one
+          - glados.cloud
+          - glados.rocks
+          - glados.network
+      validate_only:
+        description: 仅验证配置与 Python，不执行签到
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-
+concurrency:
+  group: glados-checkin
+  cancel-in-progress: false
 jobs:
   checkin:
-    if: github.event_name == 'schedule' || inputs.dispatch_source == 'manual' || inputs.dispatch_source == 'external'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Dependencies
-        run: python -m pip install -r requirements.txt
-
-      - name: Run Tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Run Checkin
-        run: python checkin.py
-        timeout-minutes: 8
+      - name: Check login and sign in
+        shell: bash
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          PUSH_LEVEL: ${{ vars.PUSH_LEVEL || 'fail_only' }}
-          # 500 积分时自动兑换 100 天；删除此变量即可关闭自动兑换。
-          AUTO_EXCHANGE_PLAN: 'plan500'
-          CHECKIN_MAX_ATTEMPTS: '3'
-          CHECKIN_RETRY_DELAY_SECONDS: '60'
-
+          GLADOS_HOST: ${{ inputs.host || vars.GLADOS_HOST || 'glados.one' }}
+          VALIDATE_ONLY: ${{ inputs.validate_only && 'true' || 'false' }}
+        run: |
+          python - <<'PY'
+          import json, os, re, sys, time
+          import urllib.request, urllib.error
+          
+          cookie = os.getenv("GLADOS_COOKIE", "").strip()
+          host = os.getenv("GLADOS_HOST", "glados.one").strip()
+          
+          def safe(value):
+              text = str(value)
+              for part in cookie.split(";"):
+                  if "=" in part:
+                      secret = part.split("=", 1)[1].strip()
+                      if secret:
+                          text = text.replace(secret, "[redacted]")
+              text = re.sub(r"[\w.+-]+@[\w.-]+", "[email]", text)
+              return text.replace("\n", " ").replace("\r", " ")[:300]
+          
+          def report(text, error=False):
+              text = safe(text)
+              print(text, flush=True)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(text.replace("<", "&lt;").replace(">", "&gt;") + "\n\n")
+              if error:
+                  escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print("::error::" + escaped, flush=True)
+          
+          def stop(text):
+              report(text, True)
+              raise SystemExit(1)
+          
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          
+          opener = urllib.request.build_opener(NoRedirect())
+          
+          def request(stage, path, payload=None):
+              body = None if payload is None else json.dumps(payload).encode()
+              headers = {"Cookie": cookie, "Content-Type": "application/json", "Accept": "application/json",
+                         "Origin": "https://" + host, "Referer": "https://" + host + "/console",
+                         "User-Agent": "Mozilla/5.0"}
+              for attempt in range(1, 4):
+                  req = urllib.request.Request("https://" + host + path, data=body, headers=headers)
+                  try:
+                      with opener.open(req, timeout=20) as response:
+                          status, raw = response.status, response.read(1048576)
+                  except urllib.error.HTTPError as exc:
+                      status, raw = exc.code, exc.read(1048576)
+                  except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                      report(f"{stage}: network error ({type(exc).__name__}), attempt {attempt}/3")
+                      if attempt == 3:
+                          stop(f"{stage}: 网络连接失败；请检查目标服务可用性。")
+                      time.sleep(10)
+                      continue
+                  if (status == 429 or status >= 500) and attempt < 3:
+                      report(f"{stage}: HTTP {status}, attempt {attempt}/3")
+                      time.sleep(10)
+                      continue
+                  try:
+                      result = json.loads(raw)
+                  except (ValueError, UnicodeError):
+                      stop(f"{stage}: HTTP {status}，返回内容不是 JSON；可能是网页、跳转或服务错误。")
+                  if not isinstance(result, dict):
+                      stop(f"{stage}: HTTP {status}，JSON 结构不符合预期。")
+                  report(f"{stage}: host={host}, HTTP={status}, code={result.get('code')}, message={result.get('message', '')}")
+                  if status != 200:
+                      stop(f"{stage}: HTTP {status}；认证或接口请求失败。")
+                  return result
+          
+          if os.getenv("VALIDATE_ONLY") == "true":
+              report("配置和 Python 运行环境校验通过；未调用签到接口。")
+              sys.exit(0)
+          if host not in {"glados.one", "glados.cloud", "glados.rocks", "glados.network"}:
+              stop("GLADOS_HOST 不在允许列表中，请使用手动运行的域名选项。")
+          if cookie.lower().startswith("cookie:"):
+              cookie = cookie.split(":", 1)[1].strip()
+          if not cookie or "=" not in cookie or "\n" in cookie or "\r" in cookie:
+              stop("请在仓库 Actions Secret GLADOS_COOKIE 中填写一行完整 Cookie。")
+          status = request("登录检查", "/api/user/status")
+          if status.get("code") != 0 or not isinstance(status.get("data"), dict):
+              stop("登录检查失败：服务未接受 Cookie。确认 Cookie 来自所选域名已登录的请求；不会切换域名重试。")
+          result = request("签到", "/api/user/checkin", {"token": "glados.cloud"})
+          message = str(result.get("message", "")).lower()
+          repeated = "checkin repeats! please try tomorrow" in message
+          if result.get("code") != 0 and not repeated:
+              stop("签到失败：请查看上方 HTTP 状态、业务 code 和 message。")
+          report("今天已签到，无需重复操作。" if repeated else "签到接口确认成功。")
+          PY
