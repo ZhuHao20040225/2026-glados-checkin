@@ -80,7 +80,7 @@ jobs:
               body = None if payload is None else json.dumps(payload).encode()
               headers = {"Cookie": cookie, "Content-Type": "application/json", "Accept": "application/json",
                          "Origin": "https://" + host, "Referer": "https://" + host + "/console",
-                         "User-Agent": "Mozilla/5.0"}
+                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0"}
               for attempt in range(1, 4):
                   req = urllib.request.Request("https://" + host + path, data=body, headers=headers)
                   try:
